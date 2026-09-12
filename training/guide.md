@@ -1,5 +1,47 @@
 # TMDB Movie Recommendation System (930K+ Movies) - Complete Guide
 
+## 🚀 Quickest start: the command line
+
+`train.py` is a normal CLI. You do not need to edit the file to train a model.
+
+```bash
+pip install -r requirements-train.txt
+
+# Default: top 50,000 movies by quality score, 50 neighbours each
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models
+
+# Smaller and much faster
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models -q high -m 10000
+
+# Every option
+python training/train.py --help
+```
+
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `data_path` | CSV file (or directory containing `TMDB_movie_dataset_v11.csv`) | required |
+| `-o, --output-dir` | Where artifacts are written | `./models` |
+| `-q, --quality` | Minimum votes: `low`=5, `medium`=50, `high`=500 | `medium` |
+| `-m, --max-movies` | Cap the catalogue (`0` = no cap) | `50000` |
+| `-k, --top-k` | Neighbours stored per movie | `50` |
+| `--components` | SVD latent dimensions | `500` |
+| `--no-svd` | Use raw TF-IDF vectors instead of SVD | off |
+| `--chunk-size` | Rows compared at a time; lower it if memory is tight | `1024` |
+| `--legacy-matrix` | Write the full N x N similarity matrix | off |
+
+### Why top-K neighbours
+
+By default the trainer keeps only the **K** most similar movies for each title
+rather than the whole similarity matrix. The matrix grows with the square of
+the catalogue: at 50,000 movies it is about 10 GB, which no small host can
+hold. The same model as top-50 neighbours is roughly 20 MB, and the
+recommendations are identical for the first K results.
+
+`--legacy-matrix` still produces the old format if you need it, and the
+inference code reads either.
+
+---
+
 ## 🎬 Dataset Overview
 
 **TMDB Movies Dataset 2023** - 1.3M+ movies with rich metadata
@@ -127,7 +169,7 @@ recommender.get_recommendations(
 ## 📊 Recommended Configurations
 
 ### Configuration 1: Full Dataset (930K+ movies)
-**Requirements:** 16GB+ RAM, GPU recommended
+**Requirements:** 16GB+ RAM. (No GPU is used -- training is CPU-bound scikit-learn work.)
 ```python
 trainer = MovieRecommenderTrainer(
     output_dir='./models_full',
@@ -195,7 +237,7 @@ pip install pandas numpy scikit-learn scipy nltk kagglehub
 ### Step 2: Download Dataset & Train
 ```python
 import kagglehub
-from movie_recommender_trainer import MovieRecommenderTrainer
+from training.train import MovieRecommenderTrainer
 
 # Download dataset
 path = kagglehub.dataset_download("asaniczka/tmdb-movies-dataset-2023-930k-movies")

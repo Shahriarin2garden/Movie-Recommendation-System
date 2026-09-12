@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Catches configuration that breaks startup, which is not something the
+      # test suite can reach: Django has to load settings before it can run.
+      - name: Django system checks
+        run: python manage.py check
+
+      - name: Production configuration checks
+        run: python manage.py check --deploy --fail-level WARNING
+        env:
+          DEBUG: "False"
+          SECRET_KEY: ci-only-key-never-used-to-serve-anything-0123456789-abcdefghij
+          ALLOWED_HOSTS: example.com
+
+      - run: python manage.py test recommender

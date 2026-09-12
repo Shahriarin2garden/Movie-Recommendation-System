@@ -18,6 +18,101 @@ This project follows [Semantic Versioning](https://semver.org/) and the changelo
 
 ## [Unreleased]
 
+### Fixed
+- **The app could not start at all.** The logging config declared a rotating
+  file handler writing to `logs/django.log`, but that directory is not in the
+  repository and `dictConfig` opens every handler at configuration time. Every
+  `manage.py` command failed with `ValueError: Unable to configure handler 'file'`.
+  Logging is now console-only, which is also the right choice for containerised
+  hosts with ephemeral disks.
+- **No model could ever ship.** `.gitignore` excluded `*.json`, `*.parquet`,
+  `*.npy`, `*.npz` and `*.pkl` repository-wide, so the "demo model" the README
+  promised in `static/` was never committed. The ignore rules are now scoped to
+  the `models/` output directories, and the docs describe the real setup.
+- **Loading a model could exhaust memory.** The similarity matrix was densified
+  with `.toarray()` on load -- about 10 GB for the documented 50,000-movie
+  configuration. Sparse matrices now stay sparse and dense ones are
+  memory-mapped, so only the row being queried is read.
+- Genres never displayed: parquet list columns load as numpy arrays, so the
+  `isinstance(value, list)` check discarded every genre. Affected the web app
+  and `training/infer.py`.
+- The year filter in `training/infer.py` read the last component of an ISO
+  date, turning `1999-03-30` into the year `30`.
+- `training/train.py` crashed on Windows consoles (cp1252) when printing emoji.
+- `SECURE_SSL_REDIRECT` was enabled without `SECURE_PROXY_SSL_HEADER`, which
+  causes an infinite redirect loop behind the TLS-terminating proxies used by
+  Render and Heroku. `CSRF_TRUSTED_ORIGINS` is now derived from the deployment
+  hostname as well, which Django requires for HTTPS form posts.
+- `/api/health/` returned 503 while the model was still loading, so a platform
+  health check could kill a deploy before it finished starting. It now reports
+  200 with `status: starting` during load and 503 only for a real failure.
+- The health endpoint no longer echoes exception text or filesystem paths.
+- Model-loading state was mutated from request threads without a lock, so
+  concurrent first requests could each start their own loader thread.
+- Google links are URL-encoded, so titles containing `&`, `?` or `#` work.
+- Rating filters are NaN-safe.
+- Poster artwork rendered *underneath* the placeholder icon, and the rank,
+  match and rating badges underneath the artwork. The placeholder is absolutely
+  positioned and positioned elements paint above static ones regardless of DOM
+  order, so the layers needed explicit z-index values. Only visible once real
+  poster images load.
+
+### Changed
+- The catalogue is no longer inlined into every page render. Autocomplete uses
+  the existing (previously unused) `/api/search/` endpoint, so page weight is
+  constant instead of growing with the number of movies.
+- Recommendations use `np.argpartition` rather than sorting every movie.
+- Title lookup tries exact, then prefix, then substring, and only falls back to
+  fuzzy matching -- much faster and more predictable than running difflib over
+  the whole catalogue on every request.
+- `training/train.py` stores the top **K** neighbours per movie instead of the
+  full N x N similarity matrix: roughly 20 MB rather than 10 GB at 50,000
+  movies, computed in bounded-memory chunks. The old format is still readable,
+  and `--legacy-matrix` still produces it.
+- `training/train.py` has a real command-line interface (`--help`).
+- MMR "diverse recommendations" re-ranks a shortlist instead of scoring every
+  movie against every selection, which was quadratic and unusable at scale.
+- Runtime and training dependencies are split (`requirements-train.txt`), and
+  the unused ones -- Django REST Framework, django-cors-headers,
+  django-extensions, redis, django-redis, python-decouple, fastparquet -- are
+  gone. `nltk`, which `train.py` imports, was missing and is now declared.
+- `SECRET_KEY` must be set explicitly when `DEBUG=False`; the app refuses to
+  start with the development key in production.
+- Gunicorn runs one worker with threads, so the model is held once per host.
+- `PYTHON_VERSION` on Render raised to 3.12 (numpy 2.3 requires 3.11+).
+- `static/logo.ico` reduced from 242 KB to 6.8 KB by keeping the 16/32/48 px
+  frames instead of nine sizes up to 256x256. Same artwork -- the 48 px frame
+  is pixel-identical to the original.
+- Packaging recipes exclude `*.pkl`. The TF-IDF and SVD pickles are retraining
+  artifacts that nothing loads at serving time, and they dominate the size: a
+  1,200-movie model is 17.2 MB packaged, or 299 KB without them. `demo_model/`
+  is also searched automatically, so committing a small model needs no
+  configuration at all.
+
+### Added
+- A test suite (37 tests) covering model loading, matching, filtering, link
+  encoding, the API endpoints, and the missing-model and error states.
+- Posters on result cards, with a graceful fallback when artwork is missing.
+- "Did you mean" suggestions are now rendered as clickable chips. The view had
+  been computing them all along; the template never displayed them.
+- A clear, actionable message when no model is installed, instead of a loading
+  bar that never finished.
+- `.env.example` documenting every supported environment variable.
+- Custom 404 and 500 pages (`error.html` existed but was never wired up).
+- Keyboard-accessible autocomplete (ARIA combobox), reduced-motion support, and
+  no-JavaScript fallbacks so content is never left invisible.
+- `Dockerfile` and `.dockerignore`. The README claimed Docker compatibility and
+  the guide told you to copy a Dockerfile out of the documentation; that one
+  pinned Python 3.10 (too old for numpy 2.3) and set `DEBUG=False` with no
+  `SECRET_KEY`, so it could not have started.
+- Optional `MODEL_URL` support in `render.yaml`: if set, the build downloads and
+  unpacks a model archive into `MODEL_DIR`. Build-time only -- the app never
+  fetches anything while serving.
+- A GitHub Actions workflow running `check`, `check --deploy` and the test
+  suite. The startup crash above is exactly the class of bug `manage.py check`
+  catches and a test suite cannot, because settings have to load first.
+
+
 ### In Development
 - User authentication system
 - Personal watchlists and favorites

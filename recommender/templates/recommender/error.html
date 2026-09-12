@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Error | Movie Recommendation System</title>
+    <title>{{ error_title|default:"Error" }} | Movie Recommendation System</title>
     <link rel="shortcut icon" href="{% static 'logo.ico' %}">
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -79,6 +79,14 @@
             box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4);
         }
 
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+
         @keyframes fadeIn {
             from {
                 opacity: 0;
@@ -93,10 +101,10 @@
 </head>
 <body>
     <div class="error-container">
-        <div class="error-icon">😕</div>
-        <h1>Oops! Something went wrong</h1>
+        <div class="error-icon">{{ error_icon|default:"😕" }}</div>
+        <h1>{{ error_title|default:"Oops! Something went wrong" }}</h1>
         <p>{{ error_message|default:"An unexpected error occurred. Please try again later." }}</p>
-        <a href="/" class="home-button">← Back to Home</a>
+        <a href="/" class="home-button">← Back to the movies</a>
     </div>
 </body>
 </html>

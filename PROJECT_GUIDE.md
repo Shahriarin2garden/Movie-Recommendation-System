@@ -74,7 +74,7 @@ This guide provides comprehensive documentation for the Movie Recommendation Sys
 
 ### Required Software
 
-- **Python 3.10 or higher** - [Download here](https://www.python.org/downloads/)
+- **Python 3.11 or higher** - [Download here](https://www.python.org/downloads/) (numpy 2.3+ requires 3.11)
 - **pip** - Python package manager (included with Python)
 - **Git** - Version control [Download here](https://git-scm.com/)
 - **Virtual environment tool** - venv (included with Python)
@@ -162,7 +162,7 @@ Run these commands to verify everything is working:
 ```bash
 # 1. Check Python version
 python --version
-# Expected: Python 3.10.x or higher
+# Expected: Python 3.11.x or higher
 
 # 2. Check Django installation
 python manage.py --version
@@ -199,12 +199,19 @@ curl "http://localhost:8000/api/search/?q=matrix"
 - **urls.py**: URL patterns for the app
 - **templates/**: HTML templates with inline CSS
 
-#### Model Files (`models/` or `static/`)
+#### Model Files (`demo_model/`, `models/`, or wherever `MODEL_DIR` points)
 - **movie_metadata.parquet**: Movie information (title, rating, genres, etc.)
-- **similarity_matrix.npz**: Precomputed similarity scores (sparse format)
+- **neighbors_idx.npy** / **neighbors_scores.npy**: Top-K most similar movies
+  per title. This is the default and by far the most compact format.
+- **similarity_matrix.npz** / **.npy**: Full similarity matrix (legacy format,
+  written only with `--legacy-matrix`). Still readable, but it costs
+  `n * n * 4` bytes -- around 10 GB at 50,000 movies.
 - **title_to_idx.json**: Mapping from titles to indices
-- **tfidf_vectorizer.pkl**: TF-IDF model (for future retraining)
-- **svd_model.pkl**: SVD dimensionality reduction model
+- **config.json**: Model metadata (movie count, format, top-K)
+- **tfidf_vectorizer.pkl**: TF-IDF model (for future retraining; not loaded by
+  the web app)
+- **svd_model.pkl**: SVD dimensionality reduction model (likewise unused at
+  serving time)
 
 #### Training Scripts (`training/`)
 - **train.py**: Complete training pipeline
@@ -273,18 +280,22 @@ For more details, see [training/guide.md - How It Works](training/guide.md)
 
 The system supports two model sources:
 
-1. **Demo Model** (included) - 2,000 popular movies, ready to use
+1. **Your own model** - trained from any TMDB-shaped CSV with `training/train.py`
 2. **Custom Model** (train your own) - 10K to 1M+ movies
 
-### Using Demo Model
+### Pointing at an existing model
 
 ```bash
-# Demo model is in static/ directory
-export MODEL_DIR=./static
+# Any directory holding config.json, title_to_idx.json,
+# movie_metadata.parquet and the similarity data
+export MODEL_DIR=models
 python manage.py runserver
 ```
 
-No training needed! Works out of the box.
+`demo_model/` is committed and is one of the directories searched
+automatically, so you only need `MODEL_DIR` when using a model of your own. If
+no model is found anywhere the site still starts, `/` explains what is missing,
+and `/api/health/` returns `503`.
 
 ### Training Your Own Model
 
@@ -501,15 +512,18 @@ python manage.py createsuperuser           # Create admin user
 
 ### Viewing Logs
 
+Logs go to stdout, which is what container platforms collect. There is no log
+file to tail.
+
 ```bash
-# Real-time logs (Unix/macOS)
-tail -f logs/django.log
+# Local development: logs appear in the terminal running the server
+python manage.py runserver
 
-# Real-time logs (Windows PowerShell)
-Get-Content logs\django.log -Wait
+# Render
+render logs --service movie-recommendation-system --tail
 
-# Last 100 lines
-tail -n 100 logs/django.log
+# Heroku
+heroku logs --tail
 ```
 
 ---
@@ -559,19 +573,56 @@ class RecommenderTests(TestCase):
 
 ## 🚀 Deployment
 
+### Getting a model onto the server
+
+A deploy needs no model configuration: `demo_model/` is committed and found
+automatically. Use one of the options below only to ship a larger model than
+the demo.
+
+**A. Replace the committed model.** Train into `demo_model/` (git-ignored
+`models/` is for local experiments; `demo_model/` is tracked) and commit it.
+No `MODEL_DIR` needed:
+
+```bash
+pip install -r requirements-train.txt
+python training/train.py ./TMDB_movie_dataset_v11.csv -o demo_model -q high -m 10000
+git add demo_model && git commit -m "Add demo model"
+```
+
+**B. Fetch at build time.** Package a trained model and host it (a GitHub
+Release asset works well), then set `MODEL_URL`:
+
+```bash
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models
+tar czf model.tar.gz -C models --exclude='*.pkl' .
+```
+
+The `-C models .` matters: archiving the directory itself nests everything one
+level too deep and the app will not find the artifacts. `render.yaml` unpacks
+the archive into `MODEL_DIR` during the build. This is build-time only; the
+app never downloads anything while serving.
+
+Nothing loaded at serving time is a pickle — the app reads parquet, JSON and
+numpy arrays (`np.load` and `load_npz` both refuse pickled data by default).
+The `.pkl` files a training run produces are for retraining, not serving.
+
+Without a model the site still starts and the home page explains what is
+missing, while `/api/health/` returns `503`. That is deliberate: a deployment
+fails loudly rather than silently serving nothing.
+
 ### Deployment Checklist
 
 Before deploying to production:
 
 - [ ] Set `DEBUG=False`
-- [ ] Generate secure `SECRET_KEY`
+- [ ] Generate a secure `SECRET_KEY` (the app refuses to start without one when
+      `DEBUG=False`)
 - [ ] Configure `ALLOWED_HOSTS`
-- [ ] Set up PostgreSQL database
-- [ ] Configure static files
-- [ ] Set up logging
-- [ ] Enable HTTPS
-- [ ] Configure backup strategy
-- [ ] Set up monitoring
+- [ ] Make a model reachable (option A or B above)
+- [ ] Run `collectstatic` as part of the build — the manifest static storage
+      needs it, and without it every page returns a 500
+- [ ] Confirm `/api/health/` reports `"status": "healthy"`
+- [ ] Set up monitoring against `/api/health/`
 
 ### Deploy to Render
 
@@ -596,7 +647,8 @@ git push origin main
 SECRET_KEY=<auto-generated>
 DEBUG=False
 ALLOWED_HOSTS=your-app.onrender.com
-MODEL_DIR=./models
+MODEL_DIR=models
+MODEL_URL=<optional: URL of model.tar.gz, see above>
 ```
 
 **Step 5: Deploy**
@@ -640,36 +692,40 @@ heroku open
 
 ### Deploy with Docker
 
-**Dockerfile:**
-```dockerfile
-FROM python:3.10-slim
+A `Dockerfile` and `.dockerignore` are in the repository root. The image bakes
+in whatever is in `MODEL_DIR` at build time, so train a model first.
 
-ENV PYTHONUNBUFFERED=1
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-RUN python manage.py collectstatic --noinput
-
-EXPOSE 8000
-
-CMD ["gunicorn", "movie_recommendation.wsgi:application", "--bind", "0.0.0.0:8000"]
-```
-
-**Build and Run:**
+**Build and run:**
 ```bash
-# Build
+# 1. Train a model (skipped if you already have one)
+pip install -r requirements-train.txt
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models
+
+# 2. Build
 docker build -t movie-recommender .
 
-# Run
-docker run -p 8000:8000 -e DEBUG=False movie-recommender
+# 3. Run
+export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
+docker run --rm -p 8000:8000 -e SECRET_KEY="$SECRET_KEY" -e ALLOWED_HOSTS=localhost,127.0.0.1 -e SECURE_SSL_REDIRECT=False movie-recommender
 
-# Access
-http://localhost:8000
+# 4. Access
+# http://localhost:8000
 ```
+
+Three things that will bite you if changed:
+
+- **`SECRET_KEY` is required.** The image sets `DEBUG=False`, and the settings
+  module refuses to start with the development key in that mode.
+- **`SECURE_SSL_REDIRECT=False` when running without a TLS proxy.** With it on
+  and nothing setting `X-Forwarded-Proto`, every request is redirected to
+  `https://` and the browser loops. Behind a real proxy, leave it on.
+- **`collectstatic` runs during the build, before `DEBUG=False` is set.** That
+  ordering is deliberate: with `DEBUG` unset it defaults to `True`, so the
+  build does not need a `SECRET_KEY`. Reversing the two lines breaks the build.
+
+`.dockerignore` deliberately does *not* exclude `models/`. Docker does not read
+`.gitignore`, so `COPY . .` is what puts your locally trained model into the
+image — that is the whole Docker workflow: train, then build.
 
 ### Deploy to AWS
 
@@ -872,11 +928,11 @@ echo $MODEL_DIR
 # Verify files exist
 ls -la models/  # or dir models\ on Windows
 
-# Use demo model
-export MODEL_DIR=./static
+# Point at a model directory
+export MODEL_DIR=models
 
-# Or train new model
-python training/train.py
+# Or train a new model
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models
 ```
 
 ---
@@ -1040,16 +1096,16 @@ See [training/guide.md - Troubleshooting](training/guide.md) for training-specif
 ### General
 
 **Q: Do I need to train a model to use the system?**  
-A: No! The project includes a pre-trained demo model with 2,000 movies. Just run and use.
+A: No. A 6,248-movie demo model is committed in `demo_model/` and is picked up automatically, so a fresh clone works immediately. Train your own only if you want a larger catalogue or a different dataset (see Model Training).
 
 **Q: What's the difference between `models/` and `static/`?**  
-A: `static/` contains the demo model (2K movies). `models/` is for your custom trained models (created after training).
+A: `static/` holds web assets such as the icon. `demo_model/` holds the committed demo model and is found automatically. `models/` is git-ignored and is where your own trained models go — point `MODEL_DIR` at it, or at any directory with the same layout.
 
 **Q: How do I switch between models?**  
 A: Set the `MODEL_DIR` environment variable:
 ```bash
-export MODEL_DIR=./static     # Demo model
-export MODEL_DIR=./models     # Your trained model
+export MODEL_DIR=models          # relative to the project root
+export MODEL_DIR=/srv/models     # or an absolute path
 ```
 
 ### Training

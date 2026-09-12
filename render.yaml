@@ -1,21 +1,43 @@
 services:
   - type: web
     name: movie-recommendation-system
-    env: python
+    runtime: python
     region: oregon
     plan: free
-    buildCommand: "pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate"
-    startCommand: "gunicorn movie_recommendation.wsgi:application"
+    # If MODEL_URL is set, the model archive is downloaded and unpacked into
+    # MODEL_DIR at build time. Otherwise the app still deploys, and reports
+    # that no model is installed until one is provided.
+    buildCommand: >-
+      pip install -r requirements.txt &&
+      if [ -n "$MODEL_URL" ]; then
+        mkdir -p "${MODEL_DIR:-models}" &&
+        curl -fsSL "$MODEL_URL" | tar -xz -C "${MODEL_DIR:-models}";
+      fi &&
+      python manage.py collectstatic --noinput &&
+      python manage.py migrate --noinput
+    # One worker: the similarity model is held per process, so extra workers
+    # multiply memory use. Threads handle concurrency instead.
+    startCommand: "gunicorn movie_recommendation.wsgi:application --workers 1 --threads 4 --timeout 120 --log-file - --access-logfile -"
     envVars:
       - key: SECRET_KEY
         generateValue: true
       - key: DEBUG
         value: "False"
+      # numpy 2.3+ requires Python 3.11 or newer.
       - key: PYTHON_VERSION
-        value: "3.10.13"
+        value: "3.12.7"
+      # RENDER_EXTERNAL_HOSTNAME is added to ALLOWED_HOSTS automatically;
+      # set this only if you serve the app from an additional custom domain.
       - key: ALLOWED_HOSTS
         sync: false
+      # Where a model of your own is unpacked/kept. When this directory is
+      # empty the app falls back to the committed demo_model/, so a deploy
+      # works without any of this.
       - key: MODEL_DIR
-        value: "./models"
+        value: "models"
+      # Optional. A .tar.gz of a trained model directory, e.g. a GitHub Release
+      # asset. Build-time only -- the app never fetches it at runtime.
+      # Create it with:  tar czf model.tar.gz -C models --exclude='*.pkl' .
+      - key: MODEL_URL
+        sync: false
     healthCheckPath: /api/health/
-

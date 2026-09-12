@@ -3,6 +3,13 @@ Advanced Movie Recommendation System - Inference Engine
 Optimized for TMDB Movies Dataset 2023 (930K+ movies)
 """
 
+import sys
+
+# Windows consoles default to a legacy code page (cp1252) that cannot encode
+# the emoji used in this script's progress output, which crashes the run.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 import pandas as pd
 import numpy as np
 from scipy.sparse import load_npz
@@ -13,6 +20,28 @@ from typing import List, Dict, Optional
 from difflib import get_close_matches
 import warnings
 warnings.filterwarnings('ignore')
+
+
+def as_list(value) -> list:
+    """Normalise a metadata cell to a plain list.
+
+    Parquet list columns load as numpy arrays, so a bare ``isinstance(x, list)``
+    check silently throws away every genre.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return []
+
+
+def release_year(release_date) -> Optional[int]:
+    """Parse a 4-digit year out of a release date cell."""
+    text = str(release_date) if release_date is not None else ''
+    head = text[:4]
+    return int(head) if head.isdigit() else None
 
 
 class MovieRecommender:
@@ -26,6 +55,8 @@ class MovieRecommender:
         self.model_dir = Path(model_dir)
         self.metadata = None
         self.similarity_matrix = None
+        self.neighbor_idx = None
+        self.neighbor_scores = None
         self.title_to_idx = None
         self.config = None
         self.load_models()
@@ -37,13 +68,28 @@ class MovieRecommender:
         # Load metadata
         self.metadata = pd.read_parquet(self.model_dir / 'movie_metadata.parquet')
         
-        # Load similarity matrix
-        if (self.model_dir / 'similarity_matrix.npz').exists():
+        # Load similarity data, cheapest representation first.
+        # Nothing here is ever densified in full: a 50k-movie similarity
+        # matrix is ~10 GB as a dense float32 array.
+        neighbors_idx = self.model_dir / 'neighbors_idx.npy'
+        neighbors_scores = self.model_dir / 'neighbors_scores.npy'
+
+        if neighbors_idx.exists() and neighbors_scores.exists():
+            print("Loading pre-computed top-K neighbours...")
+            self.neighbor_idx = np.load(neighbors_idx, mmap_mode='r')
+            self.neighbor_scores = np.load(neighbors_scores, mmap_mode='r')
+        elif (self.model_dir / 'similarity_matrix.npz').exists():
             print("Loading sparse similarity matrix...")
-            self.similarity_matrix = load_npz(self.model_dir / 'similarity_matrix.npz').toarray()
+            self.similarity_matrix = load_npz(self.model_dir / 'similarity_matrix.npz').tocsr()
+        elif (self.model_dir / 'similarity_matrix.npy').exists():
+            print("Loading dense similarity matrix (memory-mapped)...")
+            self.similarity_matrix = np.load(
+                self.model_dir / 'similarity_matrix.npy', mmap_mode='r')
         else:
-            print("Loading dense similarity matrix...")
-            self.similarity_matrix = np.load(self.model_dir / 'similarity_matrix.npy')
+            raise FileNotFoundError(
+                f"No similarity data found in {self.model_dir}. Expected "
+                "neighbors_idx.npy, similarity_matrix.npz or similarity_matrix.npy."
+            )
         
         # Load title mapping
         with open(self.model_dir / 'title_to_idx.json', 'r') as f:
@@ -56,6 +102,46 @@ class MovieRecommender:
         print(f"✅ Loaded {self.config['n_movies']:,} movies from {self.config.get('dataset', 'dataset')}")
         print(f"   Model ready for inference!")
     
+    def neighbors(self, movie_idx: int, limit: int):
+        """Return (indices, scores) of the most similar movies, best first.
+
+        Works with any of the three stored formats and never materialises more
+        than a single similarity row.
+        """
+        if self.neighbor_idx is not None:
+            indices = np.asarray(self.neighbor_idx[movie_idx])
+            scores = np.asarray(self.neighbor_scores[movie_idx])
+            keep = indices != movie_idx
+            return indices[keep][:limit], scores[keep][:limit]
+
+        if hasattr(self.similarity_matrix, 'toarray'):
+            row = self.similarity_matrix[movie_idx].toarray().ravel()
+        else:
+            row = np.asarray(self.similarity_matrix[movie_idx], dtype=np.float32).copy()
+
+        row[movie_idx] = -np.inf
+        take = int(min(limit, row.size - 1))
+        if take <= 0:
+            return np.empty(0, dtype=int), np.empty(0, dtype=np.float32)
+        if take < row.size:
+            candidates = np.argpartition(-row, take - 1)[:take]
+        else:
+            candidates = np.arange(row.size)
+        candidates = candidates[np.argsort(-row[candidates], kind='stable')]
+        return candidates, row[candidates]
+
+    def _pair_similarity(self, a: int, b: int) -> float:
+        """Similarity between two movies, whatever the stored format."""
+        if self.neighbor_idx is not None:
+            # Top-K files hold no score for pairs outside each other's
+            # neighbourhood; those are far apart, so 0 is the right answer.
+            row = np.asarray(self.neighbor_idx[a])
+            hit = np.nonzero(row == b)[0]
+            return float(self.neighbor_scores[a][hit[0]]) if hit.size else 0.0
+        if hasattr(self.similarity_matrix, 'toarray'):
+            return float(self.similarity_matrix[a, b])
+        return float(self.similarity_matrix[a][b])
+
     def find_movie(self, title: str, threshold: float = 0.6) -> Optional[str]:
         """
         Fuzzy search for movie title
@@ -83,7 +169,7 @@ class MovieRecommender:
             'title': movie['title'],
             'release_date': movie['release_date'],
             'production': movie['primary_company'],
-            'genres': movie['genres'] if isinstance(movie['genres'], list) else [],
+            'genres': as_list(movie['genres']),
             'rating': f"{movie['vote_average']:.1f}/10",
             'votes': f"{movie['vote_count']:,}",
             'popularity': f"{movie['popularity']:.1f}",
@@ -133,43 +219,41 @@ class MovieRecommender:
         movie_idx = self.title_to_idx[matched_title]
         source_movie = self.metadata.iloc[movie_idx]
         
-        # Get similarity scores
-        sim_scores = list(enumerate(self.similarity_matrix[movie_idx]))
-        sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-        
-        # Exclude the input movie itself
-        sim_scores = sim_scores[1:]
-        
+        # Pull a candidate pool large enough to survive the filters below.
+        filters_active = any([min_year, max_year, genres, min_rating, exclude_same_company])
+        pool = n_recommendations * 6 + 30 if filters_active else n_recommendations + 5
+        indices, scores = self.neighbors(movie_idx, pool)
+
         # Apply filters
         recommendations = []
         source_company = source_movie['primary_company']
-        
-        for idx, score in sim_scores:
+
+        for idx, score in zip(indices, scores):
             if len(recommendations) >= n_recommendations:
                 break
             
             movie = self.metadata.iloc[idx]
             
-            # Year filter
+            # Year filter. The year is the first component of an ISO date --
+            # taking the last one turned "1999-03-30" into the year 30.
             if min_year or max_year:
-                try:
-                    release_str = str(movie['release_date'])
-                    if len(release_str) >= 4:
-                        year = int(release_str.split('-')[-1]) if '-' in release_str else int(release_str[:4])
-                        if min_year and year < min_year:
-                            continue
-                        if max_year and year > max_year:
-                            continue
-                except:
+                year = release_year(movie['release_date'])
+                if year is None:
                     continue
-            
-            # Rating filter
-            if min_rating and movie['vote_average'] < min_rating:
-                continue
+                if min_year and year < min_year:
+                    continue
+                if max_year and year > max_year:
+                    continue
+
+            # Rating filter (NaN-safe)
+            if min_rating is not None:
+                rating = movie['vote_average']
+                if pd.isna(rating) or rating < min_rating:
+                    continue
             
             # Genre filter
             if genres:
-                movie_genres = movie['genres'] if isinstance(movie['genres'], list) else []
+                movie_genres = as_list(movie['genres'])
                 movie_genres_lower = [g.lower().replace(' ', '') for g in movie_genres]
                 genres_lower = [g.lower().replace(' ', '') for g in genres]
                 if not any(g in movie_genres_lower for g in genres_lower):
@@ -185,11 +269,11 @@ class MovieRecommender:
                 'title': movie['title'],
                 'production': movie['primary_company'] if pd.notna(movie['primary_company']) else 'N/A',
                 'release_date': movie['release_date'],
-                'genres': movie['genres'] if isinstance(movie['genres'], list) else [],
+                'genres': as_list(movie['genres']),
                 'rating': f"{movie['vote_average']:.1f}/10",
                 'votes': f"{movie['vote_count']:,}",
                 'similarity_score': float(score),
-                'tmdb_id': int(movie['id']),
+                'tmdb_id': int(movie['id']) if pd.notna(movie['id']) else None,
                 'imdb_id': movie['imdb_id'] if pd.notna(movie['imdb_id']) else None,
                 'poster_url': f"https://image.tmdb.org/t/p/w500{movie['poster_path']}" if pd.notna(movie['poster_path']) else None,
                 'google_search': f"https://www.google.com/search?q={'+'.join(movie['title'].split())}+movie",
@@ -200,7 +284,7 @@ class MovieRecommender:
             'query_movie': matched_title,
             'query_details': {
                 'production': source_movie['primary_company'],
-                'genres': source_movie['genres'] if isinstance(source_movie['genres'], list) else [],
+                'genres': as_list(source_movie['genres']),
                 'rating': f"{source_movie['vote_average']:.1f}/10",
                 'release_date': source_movie['release_date']
             },
@@ -253,9 +337,9 @@ class MovieRecommender:
             df = df[
                 df['genres'].apply(
                     lambda x: any(
-                        g in [genre.lower().replace(' ', '') for genre in (x if isinstance(x, list) else [])]
+                        g in [genre.lower().replace(' ', '') for genre in as_list(x)]
                         for g in genres_lower
-                    ) if isinstance(x, list) else False
+                    )
                 )
             ]
         
@@ -268,7 +352,7 @@ class MovieRecommender:
                 'rating': f"{row['vote_average']:.1f}/10",
                 'votes': f"{row['vote_count']:,}",
                 'release_date': row['release_date'],
-                'genres': row['genres'] if isinstance(row['genres'], list) else [],
+                'genres': as_list(row['genres']),
                 'production': row['primary_company'] if pd.notna(row['primary_company']) else 'N/A'
             })
         
@@ -294,38 +378,37 @@ class MovieRecommender:
         matched_title = self.find_movie(movie_title)
         if not matched_title:
             return {'error': f"Movie '{movie_title}' not found"}
-        
+
         movie_idx = self.title_to_idx[matched_title]
-        sim_to_query = self.similarity_matrix[movie_idx]
-        
+
+        # MMR re-ranks a shortlist rather than the whole catalogue. Scoring
+        # every movie against every selection was O(n^2) per call, which is
+        # minutes of work once n reaches the tens of thousands.
+        pool_size = max(n_recommendations * 10, 100)
+        pool_idx, pool_scores = self.neighbors(movie_idx, pool_size)
+        if len(pool_idx) == 0:
+            return {'query_movie': matched_title, 'recommendations': []}
+
+        relevance = {int(i): float(sc) for i, sc in zip(pool_idx, pool_scores)}
+        remaining = [int(i) for i in pool_idx]
         selected = []
-        candidates = list(range(len(self.metadata)))
-        candidates.remove(movie_idx)
-        
-        for _ in range(min(n_recommendations, len(candidates))):
-            mmr_scores = []
-            
-            for candidate in candidates:
-                if candidate in selected:
-                    continue
-                
-                relevance = sim_to_query[candidate]
-                
+
+        for _ in range(min(n_recommendations, len(remaining))):
+            best, best_score = None, None
+            for candidate in remaining:
                 if selected:
-                    max_sim = max(self.similarity_matrix[candidate][s] for s in selected)
+                    max_sim = max(self._pair_similarity(candidate, s) for s in selected)
                 else:
-                    max_sim = 0
-                
-                mmr = (1 - diversity_weight) * relevance - diversity_weight * max_sim
-                mmr_scores.append((candidate, mmr))
-            
-            if not mmr_scores:
+                    max_sim = 0.0
+                mmr = ((1 - diversity_weight) * relevance[candidate]
+                       - diversity_weight * max_sim)
+                if best_score is None or mmr > best_score:
+                    best, best_score = candidate, mmr
+            if best is None:
                 break
-            
-            best = max(mmr_scores, key=lambda x: x[1])[0]
             selected.append(best)
-            candidates.remove(best)
-        
+            remaining.remove(best)
+
         recommendations = []
         for rank, idx in enumerate(selected, 1):
             movie = self.metadata.iloc[idx]
@@ -334,10 +417,10 @@ class MovieRecommender:
                 'title': movie['title'],
                 'production': movie['primary_company'] if pd.notna(movie['primary_company']) else 'N/A',
                 'rating': f"{movie['vote_average']:.1f}/10",
-                'genres': movie['genres'] if isinstance(movie['genres'], list) else [],
-                'similarity_score': float(sim_to_query[idx])
+                'genres': as_list(movie['genres']),
+                'similarity_score': relevance[idx]
             })
-        
+
         return {
             'query_movie': matched_title,
             'recommendations': recommendations

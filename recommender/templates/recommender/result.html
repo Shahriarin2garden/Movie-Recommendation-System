@@ -4,16 +4,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Movie recommendations for {{ input_movie_name }}">
-    <title>Recommendations for {{ input_movie_name }} | Movie Recommendation System</title>
-    
+    <meta name="description" content="Movies similar to {{ input_movie_name }} — ratings, genres and where to find them.">
+    <meta name="theme-color" content="#0f172a">
+    <title>Movies like {{ input_movie_name }} | Movie Recommendation System</title>
+
     <link rel="shortcut icon" href="{% static 'logo.ico' %}">
-    
+
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    
+
+    <!-- Poster host, warmed up early so images start arriving sooner. -->
+    <link rel="preconnect" href="https://image.tmdb.org" crossorigin>
+
+    <script>document.documentElement.classList.add('js');</script>
+
     <style>
         * {
             margin: 0;
@@ -43,13 +49,9 @@
             line-height: 1.6;
         }
 
-        /* Animated background */
         .background-animation {
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
             z-index: -1;
             opacity: 0.05;
         }
@@ -73,9 +75,9 @@
 
         /* Header */
         .header {
-            background: var(--surface);
+            background: rgba(30, 41, 59, 0.92);
             border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 1.5rem 2rem;
+            padding: 1.25rem 2rem;
             position: sticky;
             top: 0;
             z-index: 100;
@@ -103,29 +105,19 @@
             transition: var(--transition);
         }
 
-        .logo-link:hover {
-            color: var(--primary-color);
-        }
-
-        .logo-small {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-        }
+        .logo-link:hover { color: var(--primary-color); }
 
         .back-button {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.75rem 1.5rem;
+            padding: 0.7rem 1.4rem;
             background: var(--primary-color);
             color: white;
             text-decoration: none;
             border-radius: var(--border-radius);
             font-weight: 500;
             transition: var(--transition);
-            border: none;
-            cursor: pointer;
         }
 
         .back-button:hover {
@@ -134,153 +126,248 @@
             box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
         }
 
-        /* Results Header */
+        a:focus-visible, button:focus-visible {
+            outline: 3px solid var(--secondary-color);
+            outline-offset: 2px;
+        }
+
+        /* Source movie hero */
         .results-header {
-            text-align: center;
-            padding: 3rem 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 3rem 1rem 1rem;
             animation: fadeInDown 0.6s ease-out;
         }
 
-        .results-title {
-            font-size: clamp(1.5rem, 4vw, 2.5rem);
-            font-weight: 700;
-            margin-bottom: 0.5rem;
+        .source-card {
+            display: flex;
+            gap: 1.5rem;
+            align-items: center;
+            background: var(--surface);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: var(--border-radius);
+            padding: 1.5rem;
+            flex-wrap: wrap;
         }
 
-        .searched-movie {
-            color: var(--primary-color);
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            background: rgba(99, 102, 241, 0.1);
+        .source-poster {
+            width: 92px;
+            aspect-ratio: 2 / 3;
+            object-fit: cover;
             border-radius: 8px;
+            flex-shrink: 0;
+            background: var(--surface-light);
         }
+
+        .source-text { flex: 1; min-width: 220px; }
+
+        .source-eyebrow {
+            font-size: 0.8rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+        }
+
+        .results-title {
+            font-size: clamp(1.4rem, 3.5vw, 2.1rem);
+            font-weight: 700;
+            margin: 0.2rem 0 0.4rem;
+        }
+
+        .searched-movie { color: var(--primary-color); }
 
         .results-subtitle {
             color: var(--text-secondary);
-            font-size: 1.1rem;
-            margin-top: 0.5rem;
+            font-size: 1rem;
         }
 
-        /* Container */
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 2rem 1rem 4rem;
+            padding: 1.5rem 1rem 4rem;
         }
 
-        /* Movie Grid */
+        .results-count {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            margin-bottom: 1.25rem;
+        }
+
+        /* Movie grid */
         .movies-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
             gap: 1.5rem;
-            animation: fadeInUp 0.6s ease-out 0.2s both;
         }
 
-        /* Movie Card */
         .movie-card {
+            display: flex;
+            flex-direction: column;
             background: var(--surface);
             border-radius: var(--border-radius);
-            padding: 1.75rem;
             border: 1px solid rgba(255, 255, 255, 0.1);
-            transition: var(--transition);
+            transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
             position: relative;
             overflow: hidden;
         }
 
-        .movie-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 4px;
-            background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
-            transform: scaleX(0);
-            transform-origin: left;
-            transition: var(--transition);
-        }
-
         .movie-card:hover {
-            transform: translateY(-8px);
+            transform: translateY(-6px);
             border-color: var(--primary-color);
             box-shadow: 0 15px 40px rgba(99, 102, 241, 0.2);
         }
 
-        .movie-card:hover::before {
-            transform: scaleX(1);
+        /* Poster */
+        .poster-wrap {
+            position: relative;
+            aspect-ratio: 2 / 3;
+            background: linear-gradient(135deg, var(--surface-light), var(--surface));
+            overflow: hidden;
+        }
+
+        /* Without artwork the tall 2:3 frame is just a big empty box, so the
+           header collapses to a strip that still carries rank and rating. */
+        .poster-wrap.no-poster {
+            aspect-ratio: auto;
+            height: 96px;
+        }
+
+        .poster-wrap.no-poster .poster-fallback { font-size: 1.75rem; }
+
+        .poster {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            transition: transform 0.4s ease;
+            /* The fallback below is absolutely positioned, and positioned
+               elements paint above static ones whatever the DOM order. Without
+               its own stacking position the artwork renders *under* the
+               placeholder icon. */
+            position: relative;
+            z-index: 1;
+        }
+
+        .movie-card:hover .poster { transform: scale(1.04); }
+
+        .poster-fallback {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 3rem;
+            color: var(--text-secondary);
         }
 
         .movie-rank {
             position: absolute;
-            top: 1rem;
-            right: 1rem;
-            width: 40px;
-            height: 40px;
-            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
-            border-radius: 50%;
+            z-index: 2;
+            top: 0.75rem;
+            left: 0.75rem;
+            min-width: 32px;
+            height: 32px;
+            padding: 0 0.5rem;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50px;
             display: flex;
             align-items: center;
             justify-content: center;
             font-weight: 700;
-            font-size: 0.9rem;
-            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+            font-size: 0.85rem;
+            backdrop-filter: blur(4px);
         }
 
-        .movie-icon {
-            font-size: 2rem;
-            margin-bottom: 1rem;
-            display: block;
+        .match-badge {
+            position: absolute;
+            z-index: 2;
+            top: 0.75rem;
+            right: 0.75rem;
+            padding: 0.25rem 0.6rem;
+            background: rgba(99, 102, 241, 0.9);
+            border-radius: 50px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            backdrop-filter: blur(4px);
+        }
+
+        .rating-badge {
+            position: absolute;
+            z-index: 2;
+            bottom: 0.75rem;
+            left: 0.75rem;
+            padding: 0.25rem 0.6rem;
+            background: rgba(15, 23, 42, 0.85);
+            border-radius: 50px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            backdrop-filter: blur(4px);
+        }
+
+        .movie-body {
+            padding: 1.1rem 1.25rem 1.25rem;
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            gap: 0.6rem;
         }
 
         .movie-title {
-            font-size: 1.25rem;
+            font-size: 1.05rem;
             font-weight: 600;
-            margin-bottom: 1rem;
-            color: var(--text-primary);
-            line-height: 1.4;
-            padding-right: 50px;
+            line-height: 1.35;
         }
 
-        .movie-details {
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-            margin-bottom: 1.25rem;
-        }
-
-        .movie-detail {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.9rem;
+        .movie-meta {
+            font-size: 0.85rem;
             color: var(--text-secondary);
         }
 
-        .detail-icon {
-            width: 20px;
-            text-align: center;
+        .genre-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+        }
+
+        .genre-tag {
+            font-size: 0.72rem;
+            padding: 0.2rem 0.55rem;
+            background: var(--surface-light);
+            border-radius: 50px;
+            color: var(--text-secondary);
+        }
+
+        .movie-overview {
+            font-size: 0.83rem;
+            color: var(--text-secondary);
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
 
         .movie-actions {
             display: flex;
-            gap: 0.75rem;
-            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-top: auto;
+            padding-top: 0.5rem;
         }
 
         .movie-link {
             flex: 1;
-            min-width: 120px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 0.5rem;
-            padding: 0.75rem 1.25rem;
-            border-radius: var(--border-radius);
+            gap: 0.35rem;
+            padding: 0.55rem 0.75rem;
+            border-radius: 8px;
             text-decoration: none;
             font-weight: 500;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             transition: var(--transition);
-            border: 2px solid;
+            border: 1px solid;
         }
 
         .link-primary {
@@ -292,7 +379,6 @@
         .link-primary:hover {
             background: var(--primary-dark);
             border-color: var(--primary-dark);
-            transform: translateY(-2px);
         }
 
         .link-secondary {
@@ -304,10 +390,8 @@
         .link-secondary:hover {
             border-color: var(--primary-color);
             color: var(--primary-color);
-            transform: translateY(-2px);
         }
 
-        /* Footer */
         .footer {
             text-align: center;
             padding: 2rem 1rem;
@@ -316,229 +400,175 @@
             border-top: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        /* Animations */
         @keyframes fadeInDown {
-            from {
-                opacity: 0;
-                transform: translateY(-30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+            from { opacity: 0; transform: translateY(-30px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        /* Scroll-based animation for cards */
-        .movie-card {
+        /* Cards are only pre-hidden when JS is around to reveal them. */
+        .js .movie-card.reveal {
             opacity: 0;
-            transform: translateY(30px);
+            transform: translateY(24px);
+        }
+
+        .js .movie-card.reveal.animate-in {
+            opacity: 1;
+            transform: translateY(0);
             transition: opacity 0.4s ease-out, transform 0.4s ease-out;
         }
 
-        .movie-card.animate-in {
-            opacity: 1;
-            transform: translateY(0);
-        }
-
-        @keyframes cardAppear {
-            from {
-                opacity: 0;
-                transform: scale(0.95) translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: scale(1) translateY(0);
-            }
-        }
-
-        /* Responsive Design */
-        @media (max-width: 768px) {
-            .header {
-                padding: 1rem;
-            }
-
-            .header-content {
-                justify-content: center;
-            }
-
-            .results-header {
-                padding: 2rem 1rem;
-            }
-
-            .movies-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .movie-card {
-                padding: 1.5rem;
-            }
-
-            .movie-actions {
-                flex-direction: column;
-            }
-
-            .movie-link {
-                width: 100%;
-            }
-        }
-
-        /* No results state */
         .no-results {
             text-align: center;
             padding: 4rem 2rem;
             color: var(--text-secondary);
         }
 
-        .no-results-icon {
-            font-size: 4rem;
-            margin-bottom: 1rem;
+        .no-results-icon { font-size: 4rem; margin-bottom: 1rem; }
+
+        @media (max-width: 768px) {
+            .header { padding: 1rem; }
+            .header-content { justify-content: center; }
+            .results-header { padding: 2rem 1rem 0.5rem; }
+            .movies-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; }
+            .movie-body { padding: 0.85rem; }
+            .movie-overview { display: none; }
+            .movie-actions { flex-direction: column; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+            .js .movie-card.reveal { opacity: 1; transform: none; }
         }
     </style>
 </head>
 <body>
-    <div class="background-animation"></div>
+    <div class="background-animation" aria-hidden="true"></div>
 
-    <!-- Header -->
     <header class="header">
         <div class="header-content">
-            <a href="/" class="logo-link">
-                <span>Movie Recommendation System</span>
+            <a href="{% url 'recommender:main' %}" class="logo-link">
+                <span>🎬 Movie Recommendation System</span>
             </a>
-            <a href="/" class="back-button">
-                ← New Search
-            </a>
+            <a href="{% url 'recommender:main' %}" class="back-button">← New search</a>
         </div>
     </header>
 
-    <!-- Results Header -->
     <div class="results-header">
-        <h1 class="results-title">
-            Movies like <span class="searched-movie">{{ input_movie_name }}</span>
-        </h1>
-        {% if source_movie %}
-        <p class="results-subtitle">
-            {{ source_movie.production }} | {{ source_movie.rating }} | {{ source_movie.genres }}
-        </p>
-        {% endif %}
-        <p class="results-subtitle">
-            We found {{ total_recommendations|default:"15" }} amazing recommendations for you
-        </p>
+        <div class="source-card">
+            {% if source_movie.poster_url %}
+            <img src="{{ source_movie.poster_url }}" alt="" class="source-poster" loading="lazy" decoding="async"
+                 onerror="this.remove()">
+            {% endif %}
+            <div class="source-text">
+                <p class="source-eyebrow">Because you searched</p>
+                <h1 class="results-title">
+                    Movies like <span class="searched-movie">{{ input_movie_name }}</span>{% if source_movie.year %} <span class="results-subtitle">({{ source_movie.year }})</span>{% endif %}
+                </h1>
+                {% if source_movie %}
+                <p class="results-subtitle">
+                    ⭐ {{ source_movie.rating }} &nbsp;·&nbsp; 🎭 {{ source_movie.genres }} &nbsp;·&nbsp; 🏢 {{ source_movie.production }}
+                </p>
+                {% endif %}
+            </div>
+        </div>
     </div>
 
-    <!-- Main Content -->
     <main class="container">
         {% if recommended_movies %}
+        <p class="results-count">Showing {{ total_recommendations }} similar {{ total_recommendations|pluralize:"film,films" }}</p>
         <div class="movies-grid">
             {% for movie in recommended_movies %}
-            <article class="movie-card">
-                <div class="movie-rank">{{ forloop.counter }}</div>
-                <span class="movie-icon">🎬</span>
-                
-                <h2 class="movie-title">{{ movie.title }}</h2>
-                
-                <div class="movie-details">
-                    <div class="movie-detail">
-                        <span class="detail-icon">⭐</span>
-                        <span>{{ movie.rating }} ({{ movie.votes }} votes)</span>
-                    </div>
-                    <div class="movie-detail">
-                        <span class="detail-icon">📅</span>
-                        <span>{{ movie.release_date }}</span>
-                    </div>
-                    <div class="movie-detail">
-                        <span class="detail-icon">🎭</span>
-                        <span>{{ movie.genres }}</span>
-                    </div>
-                    <div class="movie-detail">
-                        <span class="detail-icon">🏢</span>
-                        <span>{{ movie.production }}</span>
-                    </div>
+            <article class="movie-card reveal">
+                <div class="poster-wrap{% if not movie.poster_url %} no-poster{% endif %}">
+                    <div class="poster-fallback" aria-hidden="true">🎬</div>
+                    {% if movie.poster_url %}
+                    <img src="{{ movie.poster_url }}"
+                         alt="Poster for {{ movie.title }}"
+                         class="poster"
+                         loading="lazy"
+                         decoding="async"
+                         onerror="this.closest('.poster-wrap').classList.add('no-poster'); this.remove();">
+                    {% endif %}
+                    <div class="movie-rank" title="Rank {{ forloop.counter }}">{{ forloop.counter }}</div>
+                    {% if movie.similarity_percent %}
+                    <div class="match-badge" title="Similarity score">{{ movie.similarity_percent }}% match</div>
+                    {% endif %}
+                    {% if movie.rating_value %}
+                    <div class="rating-badge">⭐ {{ movie.rating_value }}</div>
+                    {% endif %}
                 </div>
 
-                <div class="movie-actions">
-                    <a href="{{ movie.google_link }}" target="_blank" rel="noopener noreferrer" class="movie-link link-primary">
-                        🔍 Google
-                    </a>
-                    {% if movie.imdb_link %}
-                    <a href="{{ movie.imdb_link }}" target="_blank" rel="noopener noreferrer" class="movie-link link-secondary">
-                        ⭐ IMDb
-                    </a>
+                <div class="movie-body">
+                    <h2 class="movie-title">{{ movie.title }}</h2>
+                    <p class="movie-meta">
+                        {% if movie.year %}{{ movie.year }} · {% endif %}{{ movie.votes }} votes
+                    </p>
+
+                    {% if movie.genre_list %}
+                    <div class="genre-tags">
+                        {% for genre in movie.genre_list %}
+                        <span class="genre-tag">{{ genre }}</span>
+                        {% endfor %}
+                    </div>
                     {% endif %}
+
+                    {% if movie.overview %}
+                    <p class="movie-overview">{{ movie.overview }}</p>
+                    {% endif %}
+
+                    <div class="movie-actions">
+                        <a href="{{ movie.google_link }}" target="_blank" rel="noopener noreferrer"
+                           class="movie-link link-primary">🔍 Google</a>
+                        {% if movie.imdb_link %}
+                        <a href="{{ movie.imdb_link }}" target="_blank" rel="noopener noreferrer"
+                           class="movie-link link-secondary">⭐ IMDb</a>
+                        {% endif %}
+                    </div>
                 </div>
             </article>
             {% endfor %}
         </div>
         {% else %}
         <div class="no-results">
-            <div class="no-results-icon">😕</div>
+            <div class="no-results-icon" aria-hidden="true">😕</div>
             <h2>No recommendations found</h2>
-            <p>We couldn't find any recommendations for this movie. Please try another one.</p>
+            <p>We couldn't find anything similar to this film. Try another title.</p>
+            <p style="margin-top:1.5rem"><a href="{% url 'recommender:main' %}" class="back-button">← Try another search</a></p>
         </div>
         {% endif %}
     </main>
 
-    <!-- Footer -->
     <footer class="footer">
-        <p>Made with ❤️ for movie lovers | © <span id="currentYear"></span> Movie Recommendation System</p>
+        <p>Made with ❤️ for movie lovers | © {% now "Y" %} Movie Recommendation System</p>
     </footer>
-    <script>
-        // Set dynamic year in footer
-        document.addEventListener("DOMContentLoaded", function() {
-            var currentYear = new Date().getFullYear();
-            document.getElementById("currentYear").textContent = currentYear;
-        });
-    </script>
 
     <script>
-        // Smooth scroll to top
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+    (function () {
+        'use strict';
+        var cards = document.querySelectorAll('.movie-card.reveal');
 
-        // Scroll-based animation for cards
-        const observerOptions = {
-            root: null,
-            rootMargin: '0px',
-            threshold: 0.1
-        };
+        if (!('IntersectionObserver' in window)) {
+            Array.prototype.forEach.call(cards, function (card) {
+                card.classList.add('animate-in');
+            });
+            return;
+        }
 
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
+        var observer = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
                 if (entry.isIntersecting) {
                     entry.target.classList.add('animate-in');
                     observer.unobserve(entry.target);
                 }
             });
-        }, observerOptions);
+        }, { rootMargin: '80px', threshold: 0.05 });
 
-        // Observe all movie cards
-        document.addEventListener('DOMContentLoaded', () => {
-            const cards = document.querySelectorAll('.movie-card');
-            cards.forEach(card => {
-                observer.observe(card);
-            });
-        });
-
-        // Add interactive feedback
-        document.querySelectorAll('.movie-card').forEach(card => {
-            card.addEventListener('click', function(e) {
-                if (e.target.tagName !== 'A') {
-                    this.style.transform = 'scale(0.98) translateY(0)';
-                    setTimeout(() => {
-                        this.style.transform = '';
-                    }, 100);
-                }
-            });
-        });
+        Array.prototype.forEach.call(cards, function (card) { observer.observe(card); });
+    })();
     </script>
 </body>
 </html>

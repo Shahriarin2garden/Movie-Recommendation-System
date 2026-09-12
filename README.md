@@ -41,13 +41,13 @@ The Movie Recommendation System provides intelligent movie suggestions using **c
 
 - ✅ **Production Ready** - Security hardened, optimized, well-documented
 - ✅ **Scalable Architecture** - Handles millions of movies efficiently
-- ✅ **Modern Tech Stack** - Django 5.0, Python 3.10+, advanced ML
+- ✅ **Modern Tech Stack** - Django 6.0, Python 3.11+, advanced ML
 - ✅ **Easy to Use** - Simple installation, clear documentation
-- ✅ **Flexible** - Train your own models or use demo models
+- ✅ **Flexible** - Train on 10K or 1M+ movies from any TMDB-shaped CSV
 
 ### Key Technologies
 
-- **Backend**: Django 6.0, Python 3.10+
+- **Backend**: Django 6.0, Python 3.11+
 - **ML/Data**: scikit-learn, pandas, numpy, scipy
 - **Storage**: Parquet (efficient data format)
 - **Deployment**: Render, Heroku, Docker compatible
@@ -92,7 +92,7 @@ The Movie Recommendation System provides intelligent movie suggestions using **c
 - 📡 **REST API** - JSON endpoints for integration
 - 🔒 **Secure** - Production-ready security settings
 - 📝 **Logging** - Comprehensive error tracking
-- 🚀 **Deployment Ready** - Render, Heroku, Docker configs included
+- 🚀 **Deployment Ready** - `render.yaml`, `Procfile` and `Dockerfile` included
 
 ---
 
@@ -100,7 +100,7 @@ The Movie Recommendation System provides intelligent movie suggestions using **c
 
 ### Prerequisites
 
-- Python 3.10 or higher
+- Python 3.11 or higher (numpy 2.3+ requires it)
 - pip package manager
 - 8GB RAM (recommended for training)
 - Git
@@ -138,7 +138,11 @@ Open your browser and navigate to:
 http://localhost:8000
 ```
 
-That's it! The demo model (2K movies) is included and works out of the box. 🎉
+That's it — a 6,248-movie demo model ships in `demo_model/` and is found
+automatically, so search works immediately with no configuration. 🎉
+
+Want a bigger catalogue, or your own dataset? See
+[Model Training](#-model-training) — it is entirely optional.
 
 ---
 
@@ -177,23 +181,32 @@ movie-recommendation-system/
 │       └── guide.md              # Training documentation
 │
 ├── 🎯 Models (Created after training)
-│   └── models/
-│       ├── movie_metadata.parquet    # Movie information
-│       ├── similarity_matrix.npz     # Similarity scores
-│       ├── title_to_idx.json         # Title mappings
-│       ├── tfidf_vectorizer.pkl      # TF-IDF model
-│       └── svd_model.pkl             # SVD reduction model
+│   ├── demo_model/               # Committed: 6,248 movies, ~3.8 MB
+│   │   ├── movie_metadata.parquet    # Movie information
+│   │   ├── neighbors_idx.npy         # Top-K neighbour indices
+│   │   ├── neighbors_scores.npy      # Top-K neighbour scores
+│   │   ├── title_to_idx.json         # Title mappings
+│   │   └── config.json               # Model configuration
+│   │
+│   └── models/                   # git-ignored; your own trained models
+│       └── ... same layout, plus *.pkl retraining artifacts
 │
 ├── 📦 Static Files
 │   └── static/
-│       ├── logo.png                  # Application logo
-│       ├── demo_model.parquet        # Demo similarity model (2K)
-│       └── top_2k_movie_data.parquet # Demo movie data (2K)
+│       └── logo.ico                  # Application icon
 │
-└── 🚀 Deployment
-    ├── Procfile                  # Heroku configuration
-    ├── render.yaml               # Render configuration
-    └── .gitignore                # Git ignore rules
+├── 🚀 Deployment
+│   ├── Procfile                  # Heroku configuration
+│   ├── render.yaml               # Render configuration
+│   ├── Dockerfile                # Container image
+│   ├── .dockerignore             # Build context exclusions
+│   └── .gitignore                # Git ignore rules
+│
+└── ⚙️ Project config
+    ├── requirements.txt          # Runtime dependencies
+    ├── requirements-train.txt    # Extra dependencies for training
+    ├── .env.example              # Documented environment variables
+    └── .github/workflows/ci.yml  # Checks and tests on every push
 ```
 
 ---
@@ -246,17 +259,31 @@ Response:
 
 ## 🎓 Model Training
 
-### Using Demo Model
+### Training a Model
 
-The project includes a pre-trained demo model with 2,000 popular movies. No training needed!
+**Training is optional.** The committed `demo_model/` (6,248 movies with 500+
+votes) covers most well-known films. Train your own for a larger catalogue, a
+different language, or your own dataset. Download the
+[TMDB Movies Dataset](https://www.kaggle.com/datasets/asaniczka/tmdb-movies-dataset-2023-930k-movies)
+(or any CSV with the same columns), then:
 
 ```bash
-# Demo model is in static/ directory
-export MODEL_DIR=./static
-python manage.py runserver
+pip install -r requirements-train.txt
+
+# Top 50,000 movies by quality score, 50 neighbours each (~20 MB output)
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models
+
+# Smaller and faster: only movies with 500+ votes
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models -q high -m 10000
+
+python training/train.py --help   # all options
 ```
 
-### Training Your Own Model
+The trainer stores the top **K** most similar movies per title rather than a
+full N x N similarity matrix. At 50,000 movies that is roughly 20 MB instead
+of 10 GB, which is what makes the free tier of most hosts viable.
+
+### Training Options
 
 Want to train on more movies or your own dataset? See the [**Training Guide**](training/guide.md) for:
 
@@ -266,23 +293,22 @@ Want to train on more movies or your own dataset? See the [**Training Guide**](t
 - 📊 Dataset requirements
 - 🔧 Advanced features
 
-**Quick Training Example:**
+**Using the trainer from Python:**
 
 ```python
 from training.train import MovieRecommenderTrainer
 
-# Initialize trainer
 trainer = MovieRecommenderTrainer(
     output_dir='./models',
     use_dimensionality_reduction=True,
-    n_components=500
+    n_components=500,
+    top_k=50,            # neighbours stored per movie
 )
 
-# Train on your dataset
-df, sim_matrix = trainer.train(
+df, neighbors = trainer.train(
     'path/to/your/dataset.csv',
     quality_threshold='medium',  # low/medium/high
-    max_movies=100000            # Limit dataset size
+    max_movies=50000,
 )
 ```
 
@@ -301,6 +327,7 @@ df, sim_matrix = trainer.train(
 | `/` | GET | Home page with search interface |
 | `/` | POST | Submit movie search and get recommendations |
 | `/api/search/` | GET | Search movies (autocomplete) |
+| `/api/model-status/` | GET | Model loading progress |
 | `/api/health/` | GET | Health check endpoint |
 
 ### Search Movies
@@ -366,11 +393,8 @@ MODEL_DIR=./models
 To switch between models, set the `MODEL_DIR` environment variable:
 
 ```bash
-# Use demo model (2K movies)
-export MODEL_DIR=./static
-
-# Use your trained model (custom)
-export MODEL_DIR=./models
+# Use your trained model (the default)
+export MODEL_DIR=models
 
 # Use absolute path
 export MODEL_DIR=/path/to/your/models
@@ -418,22 +442,88 @@ For detailed configuration options, see [PROJECT_GUIDE.md - Configuration](PROJE
 
 ## 🚀 Deployment
 
-### Quick Deploy to Render
+> **Deployments work as-is.** The committed `demo_model/` is found
+> automatically, so a deploy from a fresh clone serves recommendations without
+> any model configuration. The options below are only for shipping a *larger*
+> model than the demo.
 
-1. Push your code to GitHub
-2. Connect repository to [Render](https://render.com)
-3. Render auto-detects `render.yaml`
-4. Set environment variables
-5. Deploy!
+### Shipping a bigger model (optional)
 
-### Other Platforms
+**Option A — replace the demo model (simplest).**
+Train into `demo_model/` (or any directory that is not git-ignored) and commit:
 
-- **Heroku**: Uses `Procfile`
-- **Docker**: Create Dockerfile from PROJECT_GUIDE
-- **AWS**: Elastic Beanstalk compatible
-- **Digital Ocean**: App Platform ready
+```bash
+pip install -r requirements-train.txt
+python training/train.py ./TMDB_movie_dataset_v11.csv -o demo_model -q high -m 10000
+git add demo_model && git commit -m "Add demo model"
+```
 
-For detailed deployment instructions, see [PROJECT_GUIDE.md - Deployment](PROJECT_GUIDE.md#-deployment)
+That is all — `demo_model/` is one of the locations checked automatically, so
+you can leave `MODEL_DIR` unset (or set it explicitly if you prefer).
+
+Two things keep this small: `models/` is git-ignored on purpose so full-size
+models never enter history, while `demo_model/` is not; and `*.pkl` is ignored
+repository-wide, so the retraining artifacts (an SVD pickle is easily 10× the
+rest of the model combined) are skipped by `git add` automatically. Nothing
+loaded at serving time is a pickle.
+
+**Option B — fetch it at build time (keeps the repo small).**
+Train a model, package it, and upload `model.tar.gz` as a GitHub Release asset:
+
+```bash
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models
+tar czf model.tar.gz -C models --exclude='*.pkl' .   # paths relative; no pickles
+```
+
+Set `MODEL_URL` to the asset URL. `render.yaml`'s build step downloads and
+unpacks it into `MODEL_DIR`. This is build-time only — the app never fetches
+anything at runtime.
+
+### Render
+
+1. Push to GitHub and connect the repository to [Render](https://render.com)
+2. Render picks up `render.yaml` automatically
+3. Set `ALLOWED_HOSTS` (your custom domain, if any) and `MODEL_URL` (option B)
+4. Deploy. `SECRET_KEY` is generated for you.
+
+### Heroku
+
+Uses the `Procfile`. Commit a model (option A) and set config vars:
+
+```bash
+heroku config:set DEBUG=False
+heroku config:set MODEL_DIR=demo_model
+heroku config:set ALLOWED_HOSTS=your-app.herokuapp.com
+heroku config:set SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
+```
+
+### Docker
+
+The image bakes in whatever is in `MODEL_DIR` at build time, so train first:
+
+```bash
+python training/train.py ./TMDB_movie_dataset_v11.csv -o models
+docker build -t movie-recommender .
+export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
+docker run --rm -p 8000:8000 \
+  -e SECRET_KEY="$SECRET_KEY" \
+  -e ALLOWED_HOSTS=localhost,127.0.0.1 \
+  -e SECURE_SSL_REDIRECT=False \
+  movie-recommender
+```
+
+`SECURE_SSL_REDIRECT=False` is required when nothing is terminating TLS in
+front of the container; otherwise every request is redirected to `https://`
+and loops.
+
+### Deployment checklist
+
+- [ ] `SECRET_KEY` set (the app refuses to start with the dev key when `DEBUG=False`)
+- [ ] `DEBUG=False`
+- [ ] `ALLOWED_HOSTS` includes your domain
+- [ ] A model is reachable — `curl https://your-app/api/health/` returns `"status": "healthy"`
+
+For more detail, see [PROJECT_GUIDE.md - Deployment](PROJECT_GUIDE.md#-deployment)
 
 ---
 

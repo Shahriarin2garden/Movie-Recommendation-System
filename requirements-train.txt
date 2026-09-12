@@ -1,0 +1,8 @@
+# Dependencies for training a model with training/train.py.
+# Not needed to serve the app -- keeping them out of requirements.txt keeps
+# deployments small and fast.
+
+-r requirements.txt
+
+scikit-learn>=1.7.2
+nltk>=3.9
