@@ -529,20 +529,46 @@ For more detail, see [PROJECT_GUIDE.md - Deployment](PROJECT_GUIDE.md#-deploymen
 
 ## 🤝 Contributing
 
-Contributions are welcome! Here's how:
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup,
+the layout of the code, and the handful of non-obvious things worth knowing
+before changing the model pipeline.
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+The short version:
 
-### Guidelines
+```bash
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py runserver        # a demo model ships, so this just works
 
-- Follow PEP 8 style guide
-- Add tests for new features
-- Update documentation
-- Keep commits focused and descriptive
+# before opening a PR -- CI runs the same three
+python manage.py check
+python manage.py test
+ruff check .
+```
+
+Style is configured in `pyproject.toml`; `ruff check . --fix` handles the
+mechanical parts. Please add a test with a bug fix and note the change under
+`[Unreleased]` in `CHANGELOG.md`.
+
+---
+
+## 🎞️ Data & attribution
+
+Movie metadata and poster images come from [TMDB](https://www.themoviedb.org/).
+
+> This product uses data from TMDB but is not endorsed or certified by TMDB.
+
+- The committed `demo_model/` is derived from the
+  [TMDB Movies Dataset](https://www.kaggle.com/datasets/asaniczka/tmdb-movies-dataset-2023-930k-movies)
+  and contains titles, overviews, ratings and poster paths originating from TMDB.
+- Poster images are loaded directly from `image.tmdb.org` at render time; none
+  are redistributed in this repository.
+- If you extend this project to call the TMDB API directly, their terms require
+  the wording *"This product uses the TMDB API but is not endorsed or certified
+  by TMDB"* together with the TMDB logo. See
+  [TMDB's terms of use](https://www.themoviedb.org/api-terms-of-use).
+
+The MIT licence below covers this project's own source code, not the movie data.
 
 ---
 

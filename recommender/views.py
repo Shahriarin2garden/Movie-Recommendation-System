@@ -12,7 +12,6 @@ import threading
 import time
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Dict, List, Optional
 from urllib.parse import quote, quote_plus
 
 import numpy as np
@@ -66,7 +65,7 @@ def _clean(value, default='Unknown'):
     return value
 
 
-def _number(value) -> Optional[float]:
+def _number(value) -> float | None:
     """Return a float for a numeric cell, or None when it is missing."""
     try:
         if value is None or pd.isna(value):
@@ -92,7 +91,7 @@ class MovieRecommender:
         self.title_to_idx = {}
         # Lowercased title -> canonical title, for fast case-insensitive lookup.
         self._lower_to_title = {}
-        self._titles: List[str] = []
+        self._titles: list[str] = []
         # Exactly one of these is populated, cheapest representation first.
         self._neighbor_idx = None      # (n, k) int array of pre-computed neighbours
         self._neighbor_scores = None   # (n, k) float array of matching scores
@@ -116,13 +115,13 @@ class MovieRecommender:
         self._load_similarity()
         report(70)
 
-        with open(self.model_dir / 'title_to_idx.json', 'r', encoding='utf-8') as handle:
+        with open(self.model_dir / 'title_to_idx.json', encoding='utf-8') as handle:
             self.title_to_idx = json.load(handle)
         self._titles = list(self.title_to_idx.keys())
         self._lower_to_title = {title.lower(): title for title in self._titles}
         report(90)
 
-        with open(self.model_dir / 'config.json', 'r', encoding='utf-8') as handle:
+        with open(self.model_dir / 'config.json', encoding='utf-8') as handle:
             self.config = json.load(handle)
         report(100)
 
@@ -168,7 +167,7 @@ class MovieRecommender:
             return int(self.config['n_movies'])
         return len(self._titles)
 
-    def find_movie(self, title: str) -> Optional[str]:
+    def find_movie(self, title: str) -> str | None:
         """Resolve user input to a known title, cheapest strategy first."""
         query = title.strip()
         if not query:
@@ -202,7 +201,7 @@ class MovieRecommender:
         matches = get_close_matches(query, narrowed or self._titles, n=1, cutoff=0.6)
         return matches[0] if matches else None
 
-    def suggest(self, query: str, n: int = 5) -> List[str]:
+    def suggest(self, query: str, n: int = 5) -> list[str]:
         """Titles to offer after a failed search.
 
         find_movie already resolves anything matching by prefix, substring or a
@@ -226,7 +225,7 @@ class MovieRecommender:
                     break
         return hits
 
-    def search_movies(self, query: str, n: int = MAX_AUTOCOMPLETE_RESULTS) -> List[str]:
+    def search_movies(self, query: str, n: int = MAX_AUTOCOMPLETE_RESULTS) -> list[str]:
         """Search titles by prefix first, then substring, for autocomplete."""
         lowered = query.strip().lower()
         if not lowered:
@@ -276,7 +275,7 @@ class MovieRecommender:
         candidates = candidates[np.argsort(-row[candidates], kind='stable')]
         return candidates, row[candidates]
 
-    def _movie_payload(self, idx: int, score: float) -> Dict:
+    def _movie_payload(self, idx: int, score: float) -> dict:
         movie = self.metadata.iloc[int(idx)]
         title = str(movie['title'])
         imdb_id = _clean(movie.get('imdb_id'), None)
@@ -306,7 +305,7 @@ class MovieRecommender:
         }
 
     def get_recommendations(self, movie_title: str, n: int = 15,
-                            min_rating: Optional[float] = None) -> Dict:
+                            min_rating: float | None = None) -> dict:
         """Recommend movies similar to ``movie_title``."""
         matched_title = self.find_movie(movie_title)
         if not matched_title:
@@ -323,7 +322,7 @@ class MovieRecommender:
         indices, scores = self._candidate_neighbours(movie_idx, pool)
 
         recommendations = []
-        for idx, score in zip(indices, scores):
+        for idx, score in zip(indices, scores, strict=False):
             if len(recommendations) >= n:
                 break
             if min_rating is not None:
@@ -358,10 +357,10 @@ class MovieRecommender:
 # ---------------------------------------------------------------------------
 
 _LOCK = threading.Lock()
-_RECOMMENDER: Optional[MovieRecommender] = None
-_LOADING_THREAD: Optional[threading.Thread] = None
+_RECOMMENDER: MovieRecommender | None = None
+_LOADING_THREAD: threading.Thread | None = None
 _PROGRESS = 0
-_LOAD_ERROR: Optional[str] = None
+_LOAD_ERROR: str | None = None
 _GENERATION = 0
 _LAST_ATTEMPT = 0.0
 
@@ -371,7 +370,7 @@ _LAST_ATTEMPT = 0.0
 MISSING_MODEL_RETRY_SECONDS = 15.0
 
 
-def _resolve_model_dir() -> Optional[Path]:
+def _resolve_model_dir() -> Path | None:
     """Return the first directory that actually contains a trained model."""
     candidates = [Path(settings.MODEL_DIR)]
     # Kept for backwards compatibility with earlier documented locations.
@@ -447,13 +446,13 @@ def _start_model_loading():
         _LOADING_THREAD.start()
 
 
-def _get_recommender() -> Optional[MovieRecommender]:
+def _get_recommender() -> MovieRecommender | None:
     """Return the loaded recommender, or None while it is unavailable."""
     _start_model_loading()
     return _RECOMMENDER
 
 
-def _model_state() -> Dict:
+def _model_state() -> dict:
     """Describe the model's availability for the status and health endpoints."""
     if _RECOMMENDER is not None:
         return {'loaded': True, 'progress': 100, 'status': 'ready'}
@@ -495,7 +494,7 @@ def _reset_for_tests():
 # Views
 # ---------------------------------------------------------------------------
 
-def _base_context(**extra) -> Dict:
+def _base_context(**extra) -> dict:
     state = _model_state()
     context = {
         'model_ready': state['status'] == 'ready',
