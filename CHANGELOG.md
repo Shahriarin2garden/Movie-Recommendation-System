@@ -104,7 +104,9 @@ This project follows [Semantic Versioning](https://semver.org/) and the changelo
 - `Dockerfile` and `.dockerignore`. The README claimed Docker compatibility and
   the guide told you to copy a Dockerfile out of the documentation; that one
   pinned Python 3.10 (too old for numpy 2.3) and set `DEBUG=False` with no
-  `SECRET_KEY`, so it could not have started.
+  `SECRET_KEY`, so it could not have started. The ignore patterns use `**/`
+  prefixes: Docker matches against the context root, so a bare `*.pkl` would
+  have baked the 40 MB SVD pickle into the image (930 MB vs 852 MB).
 - Optional `MODEL_URL` support in `render.yaml`: if set, the build downloads and
   unpacks a model archive into `MODEL_DIR`. Build-time only -- the app never
   fetches anything while serving.
