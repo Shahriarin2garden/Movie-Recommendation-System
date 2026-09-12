@@ -110,9 +110,25 @@ This project follows [Semantic Versioning](https://semver.org/) and the changelo
 - Optional `MODEL_URL` support in `render.yaml`: if set, the build downloads and
   unpacks a model archive into `MODEL_DIR`. Build-time only -- the app never
   fetches anything while serving.
-- A GitHub Actions workflow running `check`, `check --deploy` and the test
-  suite. The startup crash above is exactly the class of bug `manage.py check`
-  catches and a test suite cannot, because settings have to load first.
+- A GitHub Actions workflow running lint, `check`, `check --deploy` and the
+  test suite. The startup crash above is exactly the class of bug
+  `manage.py check` catches and a test suite cannot, because settings have to
+  load first.
+- **TMDB attribution.** The demo model is derived from TMDB data and the UI
+  loads poster images from `image.tmdb.org`, but the required notice appeared
+  nowhere. It is now in the app footer, the README, and `demo_model/README.md`
+  alongside the data's provenance.
+- `CONTRIBUTING.md`: setup, how to run the checks, the layout of the code, and
+  the non-obvious things -- parquet list columns loading as numpy arrays, the
+  top-K neighbour format, and the conda-versus-pip scipy problem that breaks
+  training on some machines.
+- Lint configuration (`ruff`, in `pyproject.toml`) and a CI step for it. The
+  contributing guide previously said "follow PEP 8" with nothing to run.
+- 20 tests for the training and inference pipeline, covering the two bugs that
+  were silent rather than loud -- genres dropped by an `isinstance` check and
+  release years read off the wrong end of an ISO date -- plus neighbour
+  selection and chunking. They skip themselves when the training extras are
+  not installed, so CI runs them without scikit-learn.
 
 
 ### In Development

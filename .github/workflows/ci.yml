@@ -18,6 +18,9 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      - name: Lint
+        run: pipx run ruff check .
+
       # Catches configuration that breaks startup, which is not something the
       # test suite can reach: Django has to load settings before it can run.
       - name: Django system checks
@@ -30,4 +33,6 @@ jobs:
           SECRET_KEY: ci-only-key-never-used-to-serve-anything-0123456789-abcdefghij
           ALLOWED_HOSTS: example.com
 
-      - run: python manage.py test recommender
+      # Training-only tests skip themselves without scikit-learn/nltk, which
+      # are deliberately not installed here -- serving does not need them.
+      - run: python manage.py test
