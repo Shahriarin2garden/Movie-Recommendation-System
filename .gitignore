@@ -24,7 +24,7 @@ wheels/
 venv/
 env/
 ENV/
-.venv
+.venv/
 
 # Django
 *.log
@@ -54,11 +54,16 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 
-# Deployment
-*.pyc
+# Trained models
+# Model artifacts are large and are produced by training/train.py, so the
+# output directories are ignored. Note this is deliberately scoped to those
+# directories: a blanket *.json / *.parquet / *.npy rule here would also
+# silently exclude a small demo model that is meant to be committed.
+/models/
+/models_*/
+
+# Training datasets (large source CSVs, e.g. the TMDB dump)
 *.csv
+
+# Pickled artifacts -- never commit these; unpickling is code execution.
 *.pkl
-*.json
-*.npy
-*.parquet
-*.npz

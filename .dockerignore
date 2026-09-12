@@ -1,0 +1,54 @@
+# Note: Docker does not read .gitignore, so models/ and demo_model/ are
+# deliberately NOT listed here -- a trained model is exactly what should be
+# baked into the image.
+#
+# Patterns are matched against the path relative to the build context, and a
+# bare pattern like "*.pkl" matches the root level only. Anything that can
+# appear in a subdirectory needs the "**/" prefix.
+
+.git
+.gitignore
+.github
+
+# Virtual environments
+.venv
+venv
+env
+ENV
+
+# Python artifacts
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+.pytest_cache
+.coverage
+htmlcov
+
+# Local state and build output
+db.sqlite3
+db.sqlite3-journal
+staticfiles
+logs
+**/*.log
+
+# Secrets
+.env
+.env.local
+
+# Training datasets (large; the model is what the image needs)
+**/*.csv
+
+# Retraining artifacts. Nothing at serving time loads a pickle -- the app reads
+# parquet, JSON and numpy arrays only -- and these dominate the model size
+# (the SVD pickle is 40 MB for a 6,248-movie model, ~10x the rest combined).
+**/*.pkl
+
+# Documentation media -- tens of MB of demo video not needed at runtime
+assets
+
+# Editor/OS noise
+.vscode
+.idea
+**/*.swp
+.DS_Store
+Thumbs.db

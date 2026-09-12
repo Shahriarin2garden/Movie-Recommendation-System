@@ -3,6 +3,15 @@ Advanced Movie Recommendation System - Training Pipeline
 Optimized for TMDB Movies Dataset 2023 (930K+ movies)
 """
 
+import sys
+
+# Windows consoles default to a legacy code page (cp1252) that cannot encode
+# the emoji used in this script's progress output, which crashes the run.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+import argparse
+
 import pandas as pd
 import numpy as np
 from scipy.sparse import csr_matrix, save_npz
@@ -19,19 +28,24 @@ warnings.filterwarnings('ignore')
 
 
 class MovieRecommenderTrainer:
-    def __init__(self, output_dir='./models', use_dimensionality_reduction=True, n_components=500):
+    def __init__(self, output_dir='./models', use_dimensionality_reduction=True,
+                 n_components=500, top_k=50, chunk_size=1024):
         """
         Initialize the trainer with advanced configurations
-        
+
         Args:
             output_dir: Directory to save trained models
             use_dimensionality_reduction: Use SVD to reduce memory footprint
             n_components: Number of latent features for SVD
+            top_k: Number of nearest neighbours stored per movie
+            chunk_size: Rows compared at a time when computing neighbours
         """
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.use_svd = use_dimensionality_reduction
         self.n_components = n_components
+        self.top_k = top_k
+        self.chunk_size = chunk_size
         self.stemmer = SnowballStemmer('english')
         
     def load_data(self, data_path):
@@ -224,8 +238,71 @@ class MovieRecommenderTrainer:
         
         return tfidf_matrix, tfidf
     
+    def build_features(self, tfidf_matrix):
+        """Reduce the TF-IDF matrix to dense latent features when SVD is on."""
+        if not (self.use_svd and tfidf_matrix.shape[0] > 1000):
+            return tfidf_matrix, None
+
+        print(f"Applying SVD dimensionality reduction to {self.n_components} components...")
+        n_components = min(
+            self.n_components,
+            tfidf_matrix.shape[0] - 1,
+            tfidf_matrix.shape[1] - 1,
+        )
+        svd = TruncatedSVD(n_components=n_components, random_state=42)
+        reduced = svd.fit_transform(tfidf_matrix).astype(np.float32)
+        print(f"Explained variance ratio: {svd.explained_variance_ratio_.sum():.3f}")
+        print(f"Reduced matrix shape: {reduced.shape}")
+        return reduced, svd
+
+    def compute_neighbors(self, features):
+        """Compute the top-K most similar movies for every movie.
+
+        Storing K neighbours per movie instead of the full N x N similarity
+        matrix is what makes large catalogues practical: at 50,000 movies the
+        full matrix is ~10 GB, while K=50 neighbours is about 20 MB. Similarity
+        is computed in row chunks so peak memory stays bounded regardless of N.
+        """
+        n_movies = features.shape[0]
+        k = int(min(self.top_k, n_movies - 1))
+        if k < 1:
+            raise ValueError("Need at least two movies to compute neighbours")
+
+        print(f"Computing top-{k} neighbours for {n_movies:,} movies "
+              f"(chunk size {self.chunk_size})...")
+
+        neighbor_idx = np.empty((n_movies, k), dtype=np.int32)
+        neighbor_scores = np.empty((n_movies, k), dtype=np.float32)
+        n_chunks = (n_movies + self.chunk_size - 1) // self.chunk_size
+
+        for chunk_no, start in enumerate(range(0, n_movies, self.chunk_size), start=1):
+            end = min(start + self.chunk_size, n_movies)
+            sims = cosine_similarity(features[start:end], features).astype(np.float32)
+
+            # A movie is always its own nearest neighbour; drop it.
+            rows = np.arange(end - start)
+            sims[rows, np.arange(start, end)] = -np.inf
+
+            top = np.argpartition(-sims, k - 1, axis=1)[:, :k]
+            top_scores = np.take_along_axis(sims, top, axis=1)
+            order = np.argsort(-top_scores, axis=1)
+
+            neighbor_idx[start:end] = np.take_along_axis(top, order, axis=1)
+            neighbor_scores[start:end] = np.take_along_axis(top_scores, order, axis=1)
+
+            if chunk_no % 5 == 0 or chunk_no == n_chunks:
+                print(f"  processed {chunk_no}/{n_chunks} chunks")
+
+        size_mb = (neighbor_idx.nbytes + neighbor_scores.nbytes) / 1024 ** 2
+        print(f"Neighbour data: {neighbor_idx.shape} ({size_mb:.1f} MB)")
+        return neighbor_idx, neighbor_scores
+
     def compute_similarity_matrix(self, tfidf_matrix):
-        """Compute similarity with optional dimensionality reduction"""
+        """Compute the full similarity matrix (legacy format).
+
+        Kept for backwards compatibility. Prefer compute_neighbors: this
+        allocates an N x N array and will exhaust memory on large catalogues.
+        """
         if self.use_svd and tfidf_matrix.shape[0] > 1000:
             print(f"Applying SVD dimensionality reduction to {self.n_components} components...")
             
@@ -273,59 +350,79 @@ class MovieRecommenderTrainer:
             similarity_matrix = cosine_similarity(tfidf_matrix, tfidf_matrix)
             return similarity_matrix.astype(np.float32), None
     
-    def save_model(self, df, similarity_matrix, tfidf_vectorizer, svd_model=None):
+    def save_model(self, df, tfidf_vectorizer, svd_model=None,
+                   neighbors=None, similarity_matrix=None):
         """Save all model artifacts efficiently"""
         print("Saving model artifacts...")
-        
-        # Save metadata DataFrame (essential columns only)
-        metadata_df = df[[
-            'id', 'title', 'release_date', 'primary_company', 
+
+        # Save metadata DataFrame (essential columns only). Columns missing
+        # from a custom dataset are filled in rather than raising a KeyError.
+        wanted = [
+            'id', 'title', 'release_date', 'primary_company',
             'genres', 'vote_average', 'vote_count', 'popularity',
             'overview', 'imdb_id', 'poster_path'
-        ]].copy()
-        
+        ]
+        for column in wanted:
+            if column not in df.columns:
+                print(f"  note: column '{column}' missing from dataset, storing as empty")
+                df[column] = None
+
+        metadata_df = df[wanted].copy()
         metadata_df.to_parquet(
             self.output_dir / 'movie_metadata.parquet',
             compression='gzip',
             index=True
         )
-        
-        # Save similarity matrix
-        print("Saving similarity matrix...")
-        if similarity_matrix.size > 10000000:  # > 10M elements
-            # Save as sparse for very large matrices
-            sparse_sim = csr_matrix(similarity_matrix)
-            save_npz(self.output_dir / 'similarity_matrix.npz', sparse_sim)
-            print(f"Saved as sparse matrix (size: {sparse_sim.data.nbytes / 1024**2:.1f} MB)")
-        else:
-            np.save(self.output_dir / 'similarity_matrix.npy', similarity_matrix)
-            print(f"Saved as dense matrix (size: {similarity_matrix.nbytes / 1024**2:.1f} MB)")
-        
+
+        matrix_shape = None
+        if neighbors is not None:
+            neighbor_idx, neighbor_scores = neighbors
+            np.save(self.output_dir / 'neighbors_idx.npy', neighbor_idx)
+            np.save(self.output_dir / 'neighbors_scores.npy', neighbor_scores)
+            matrix_shape = list(neighbor_idx.shape)
+            print(f"Saved top-{neighbor_idx.shape[1]} neighbours "
+                  f"({(neighbor_idx.nbytes + neighbor_scores.nbytes) / 1024**2:.1f} MB)")
+        elif similarity_matrix is not None:
+            print("Saving full similarity matrix (legacy format)...")
+            matrix_shape = list(similarity_matrix.shape)
+            density = np.count_nonzero(similarity_matrix) / similarity_matrix.size
+            # csr only saves space on a genuinely sparse matrix; a dense one
+            # stored as csr is roughly 50% larger than the plain array.
+            if density < 0.3:
+                sparse_sim = csr_matrix(similarity_matrix)
+                save_npz(self.output_dir / 'similarity_matrix.npz', sparse_sim)
+                print(f"Saved as sparse matrix ({sparse_sim.data.nbytes / 1024**2:.1f} MB)")
+            else:
+                np.save(self.output_dir / 'similarity_matrix.npy', similarity_matrix)
+                print(f"Saved as dense matrix ({similarity_matrix.nbytes / 1024**2:.1f} MB)")
+
         # Save title to index mapping
         title_to_idx = pd.Series(df.index, index=df['title']).to_dict()
-        with open(self.output_dir / 'title_to_idx.json', 'w') as f:
-            json.dump(title_to_idx, f)
-        
+        with open(self.output_dir / 'title_to_idx.json', 'w', encoding='utf-8') as f:
+            json.dump(title_to_idx, f, ensure_ascii=False)
+
         # Save TF-IDF vectorizer
         with open(self.output_dir / 'tfidf_vectorizer.pkl', 'wb') as f:
             pickle.dump(tfidf_vectorizer, f)
-        
+
         # Save SVD model if used
-        if svd_model:
+        if svd_model is not None:
             with open(self.output_dir / 'svd_model.pkl', 'wb') as f:
                 pickle.dump(svd_model, f)
-        
+
         # Save configuration
         config = {
             'n_movies': len(df),
             'use_svd': self.use_svd,
-            'n_components': self.n_components if svd_model else None,
-            'matrix_shape': similarity_matrix.shape,
-            'dataset': 'TMDB 2023 (930K movies)'
+            'n_components': self.n_components if svd_model is not None else None,
+            'format': 'neighbors' if neighbors is not None else 'similarity_matrix',
+            'top_k': self.top_k if neighbors is not None else None,
+            'matrix_shape': matrix_shape,
+            'dataset': 'TMDB 2023',
         }
-        with open(self.output_dir / 'config.json', 'w') as f:
+        with open(self.output_dir / 'config.json', 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2)
-        
+
         print(f"✅ Model saved to {self.output_dir}")
         
         # Print summary
@@ -336,83 +433,108 @@ class MovieRecommenderTrainer:
         ) / 1024**2
         print(f"Total model size: {total_size:.1f} MB")
     
-    def train(self, data_path, quality_threshold='medium', max_movies=None):
+    def train(self, data_path, quality_threshold='medium', max_movies=None,
+              legacy_matrix=False):
         """
         Complete training pipeline
-        
+
         Args:
             data_path: Path to CSV file or directory containing it
             quality_threshold: 'low', 'medium', or 'high'
             max_movies: Limit number of movies (None = all)
+            legacy_matrix: Save the full N x N similarity matrix instead of
+                top-K neighbours. Only useful for tooling that expects the
+                older format; needs vastly more memory and disk.
+
+        Returns:
+            (df, neighbors_or_matrix)
         """
-        print("="*80)
+        print("=" * 80)
         print("🎬 TMDB Movie Recommendation System Training")
-        print("="*80)
-        
-        # Load data
+        print("=" * 80)
+
         df = self.load_data(data_path)
-        
-        # Feature engineering
         df = self.clean_and_engineer_features(df, quality_threshold)
-        
-        # Limit dataset if specified
+
         if max_movies and len(df) > max_movies:
-            df = df.head(max_movies)
+            df = df.head(max_movies).copy()
             print(f"Limited to top {max_movies} movies by quality score")
-        
-        # Build TF-IDF matrix
+            df = df.reset_index(drop=True)
+
         tfidf_matrix, tfidf_vectorizer = self.build_tfidf_matrix(df)
-        
-        # Compute similarity
-        similarity_matrix, svd_model = self.compute_similarity_matrix(tfidf_matrix)
-        
-        # Save everything
-        self.save_model(df, similarity_matrix, tfidf_vectorizer, svd_model)
-        
-        print("="*80)
+
+        if legacy_matrix:
+            similarity_matrix, svd_model = self.compute_similarity_matrix(tfidf_matrix)
+            self.save_model(df, tfidf_vectorizer, svd_model,
+                            similarity_matrix=similarity_matrix)
+            result = similarity_matrix
+        else:
+            features, svd_model = self.build_features(tfidf_matrix)
+            neighbors = self.compute_neighbors(features)
+            self.save_model(df, tfidf_vectorizer, svd_model, neighbors=neighbors)
+            result = neighbors
+
+        print("=" * 80)
         print("✅ Training completed successfully!")
-        print("="*80)
-        
-        return df, similarity_matrix
+        print("=" * 80)
+
+        return df, result
 
 
-# Example usage
-if __name__ == "__main__":
-    
-    # Downloaded dataset
-    path = "./TMDB  IMDB Movies Dataset.csv"
-    
-    # Configuration based on your needs:
-    
-    # For FULL dataset (930K+ movies) - Requires ~16GB RAM
-    # trainer = MovieRecommenderTrainer(
-    #     output_dir='./models_full',
-    #     use_dimensionality_reduction=True,
-    #     n_components=400
-    # )
-    # df, sim_matrix = trainer.train(path, quality_threshold='low')
-    
-    # For HIGH QUALITY dataset (~100K movies) - Recommended
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        description="Train the movie recommendation model.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        'data_path',
+        help="Path to the dataset CSV (or a directory containing "
+             "TMDB_movie_dataset_v11.csv)",
+    )
+    parser.add_argument('-o', '--output-dir', default='./models',
+                        help="Where to write the model artifacts")
+    parser.add_argument('-q', '--quality', default='medium',
+                        choices=['low', 'medium', 'high'],
+                        help="Minimum vote count: low=5, medium=50, high=500")
+    parser.add_argument('-m', '--max-movies', type=int, default=50000,
+                        help="Cap the catalogue to the top N movies by quality "
+                             "score (0 means no cap)")
+    parser.add_argument('-k', '--top-k', type=int, default=50,
+                        help="Neighbours stored per movie")
+    parser.add_argument('--components', type=int, default=500,
+                        help="SVD latent dimensions")
+    parser.add_argument('--no-svd', action='store_true',
+                        help="Skip SVD and use the raw TF-IDF vectors")
+    parser.add_argument('--chunk-size', type=int, default=1024,
+                        help="Rows compared at a time; lower it if memory is tight")
+    parser.add_argument('--legacy-matrix', action='store_true',
+                        help="Save the full N x N similarity matrix (memory heavy)")
+    return parser
+
+
+def main(argv=None):
+    args = build_arg_parser().parse_args(argv)
+
     trainer = MovieRecommenderTrainer(
-        output_dir='./models',
-        use_dimensionality_reduction=True,
-        n_components=500
+        output_dir=args.output_dir,
+        use_dimensionality_reduction=not args.no_svd,
+        n_components=args.components,
+        top_k=args.top_k,
+        chunk_size=args.chunk_size,
     )
-    df, sim_matrix = trainer.train(
-        path, 
-        quality_threshold='medium',  # 50+ votes
-        max_movies=50000  # Top 100K by quality
-    )
-    
-    # For MEDIUM dataset (~10K movies) - Fast training
-    # trainer = MovieRecommenderTrainer(
-    #     output_dir='./models_medium',
-    #     use_dimensionality_reduction=False
-    # )
-    # df, sim_matrix = trainer.train(path, quality_threshold='high', max_movies=10000)
-    
-    print(f"\n📊 Final Statistics:")
-    print(f"   Movies in model: {len(df):,}")
-    print(f"   Similarity matrix: {sim_matrix.shape}")
-    print(f"   Memory usage: {sim_matrix.nbytes / 1024**2:.1f} MB")
 
+    df, _ = trainer.train(
+        args.data_path,
+        quality_threshold=args.quality,
+        max_movies=args.max_movies or None,
+        legacy_matrix=args.legacy_matrix,
+    )
+
+    print("\n📊 Final statistics:")
+    print(f"   Movies in model: {len(df):,}")
+    print(f"   Output directory: {Path(args.output_dir).resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

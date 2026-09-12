@@ -1,0 +1,12 @@
+{
+  "n_movies": 6248,
+  "use_svd": true,
+  "n_components": 500,
+  "format": "neighbors",
+  "top_k": 50,
+  "matrix_shape": [
+    6248,
+    50
+  ],
+  "dataset": "TMDB 2023"
+}
