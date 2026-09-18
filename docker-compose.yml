@@ -1,0 +1,58 @@
+services:
+  web:
+    build: .
+    image: movie-recommender
+    restart: unless-stopped
+    init: true
+    environment:
+      SECRET_KEY: "${SECRET_KEY:?set SECRET_KEY in .env (see .env.docker.example)}"
+      DEBUG: "${DEBUG:-False}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      SECURE_SSL_REDIRECT: "${SECURE_SSL_REDIRECT:-False}"
+      SQLITE_PATH: /data/db.sqlite3
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - db-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/health/')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  train:
+    build:
+      context: .
+      dockerfile: Dockerfile.train
+    image: movie-recommender-train
+    profiles: ["training"]
+    user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    environment:
+      HOME: /tmp
+    volumes:
+      - ./models:/app/models
+    command: ["--help"]
+
+  infer:
+    image: movie-recommender-train
+    profiles: ["training"]
+    user: "${USER_UID:-1000}:${USER_GID:-1000}"
+    environment:
+      HOME: /tmp
+    stdin_open: true
+    tty: true
+    entrypoint: ["python", "training/infer.py"]
+    volumes:
+      - ./models:/app/models:ro
+
+  test:
+    image: movie-recommender
+    profiles: ["tools"]
+    environment:
+      DEBUG: "True"
+    entrypoint: ["sh", "-c"]
+    command: ["python manage.py check && python manage.py test"]
+
+volumes:
+  db-data:
